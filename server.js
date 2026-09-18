@@ -4,34 +4,25 @@ const app = express();
 
 app.use(express.json());
 
-
-// ==========================================
-// TEMPORARY JOB STORAGE
-// ==========================================
-
-const jobs = {};
-
-
-// ==========================================
-// HOME / HEALTH CHECK
-// ==========================================
+const RAILWAY_PROCESSOR =
+  "https://clipai-backend-production-a6f3.up.railway.app";
 
 app.get("/", (req, res) => {
-
   res.json({
     status: "online",
-    message: "ClipAI processing server is online.",
-    processor: "ready"
+    message: "ClipAI API server is online.",
+    processor: "Railway connected"
   });
-
 });
 
 
-// ==========================================
-// CREATE VOD PROCESSING JOB
-// ==========================================
+/*
+========================================
+CREATE PROCESSING JOB
+========================================
+*/
 
-app.post("/process", (req, res) => {
+app.post("/process", async (req, res) => {
 
   const { url } = req.body;
 
@@ -40,22 +31,14 @@ app.post("/process", (req, res) => {
   console.log("URL:", url);
   console.log("=================================");
 
-
-  // Check URL
-
   if (!url) {
-
-    console.log("ERROR: No VOD URL");
 
     return res.status(400).json({
       success: false,
       error: "VOD URL is required."
     });
-
   }
 
-
-  // Check supported platform
 
   const lowerUrl = url.toLowerCase();
 
@@ -68,127 +51,219 @@ app.post("/process", (req, res) => {
 
   if (!supported) {
 
-    console.log("ERROR: Unsupported platform");
-
     return res.status(400).json({
       success: false,
       error:
         "Only YouTube, Twitch and Kick links are supported."
     });
-
   }
 
 
-  // Create unique Job ID
+  try {
+
+    console.log("Sending job to Railway...");
+
+
+    const railwayResponse = await fetch(
+      `${RAILWAY_PROCESSOR}/process`,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json"
+        },
+
+        body: JSON.stringify({
+          url: url
+        })
+      }
+    );
+
+
+    const railwayText =
+      await railwayResponse.text();
+
+
+    console.log(
+      "Railway response:",
+      railwayText
+    );
+
+
+    if (!railwayResponse.ok) {
+
+      return res.status(502).json({
+        success: false,
+        error:
+          "Railway processor returned an error.",
+        details:
+          railwayText
+      });
+    }
+
+
+    let railwayData;
+
+
+    try {
+
+      railwayData =
+        JSON.parse(railwayText);
+
+    } catch (error) {
+
+      return res.status(502).json({
+        success: false,
+        error:
+          "Railway returned an invalid response.",
+        details:
+          railwayText
+      });
+    }
+
+
+    return res.json(railwayData);
+
+
+  } catch (error) {
+
+    console.log(
+      "Railway connection error:",
+      error.message
+    );
+
+
+    return res.status(502).json({
+      success: false,
+      error:
+        "Could not connect to Railway processor.",
+      details:
+        error.message
+    });
+  }
+
+});
+
+
+/*
+========================================
+CHECK JOB STATUS
+========================================
+*/
+
+app.get("/status/:jobId", async (req, res) => {
 
   const jobId =
-    Date.now().toString(36) +
-    Math.random().toString(36).substring(2, 8);
+    req.params.jobId;
 
 
-  // Create job
-
-  jobs[jobId] = {
-
-    jobId: jobId,
-
-    url: url,
-
-    status: "queued",
-
-    progress: 0,
-
-    moments: [],
-
-    createdAt: new Date().toISOString()
-
-  };
+  console.log(
+    "STATUS REQUEST:",
+    jobId
+  );
 
 
-  console.log("JOB CREATED");
-  console.log("Job ID:", jobId);
-  console.log("Status: queued");
+  if (!jobId) {
 
-
-  // Send response
-
-  return res.json({
-
-    success: true,
-
-    jobId: jobId,
-
-    status: "queued",
-
-    progress: 0,
-
-    message:
-      "VOD received and processing job created.",
-
-    url: url
-
-  });
-
-});
-
-
-// ==========================================
-// CHECK JOB STATUS
-// ==========================================
-
-app.get("/status/:jobId", (req, res) => {
-
-  const jobId = req.params.jobId;
-
-  console.log("STATUS REQUEST");
-  console.log("Job ID:", jobId);
-
-
-  const job = jobs[jobId];
-
-
-  if (!job) {
-
-    return res.status(404).json({
-
+    return res.status(400).json({
       success: false,
-
-      error: "Job not found."
-
+      error: "Job ID is required."
     });
-
   }
 
 
-  return res.json({
+  try {
 
-    success: true,
+    const railwayResponse =
+      await fetch(
+        `${RAILWAY_PROCESSOR}/status/${jobId}`,
+        {
+          method: "GET"
+        }
+      );
 
-    jobId: job.jobId,
 
-    status: job.status,
+    const railwayText =
+      await railwayResponse.text();
 
-    progress: job.progress,
 
-    moments: job.moments,
+    console.log(
+      "Railway status:",
+      railwayText
+    );
 
-    createdAt: job.createdAt
 
-  });
+    if (!railwayResponse.ok) {
+
+      return res.status(
+        railwayResponse.status
+      ).json({
+        success: false,
+        error:
+          "Railway processor returned a status error.",
+        details:
+          railwayText
+      });
+    }
+
+
+    let railwayData;
+
+
+    try {
+
+      railwayData =
+        JSON.parse(railwayText);
+
+    } catch (error) {
+
+      return res.status(502).json({
+        success: false,
+        error:
+          "Railway returned an invalid status response.",
+        details:
+          railwayText
+      });
+    }
+
+
+    return res.json(railwayData);
+
+
+  } catch (error) {
+
+    console.log(
+      "Railway status connection error:",
+      error.message
+    );
+
+
+    return res.status(502).json({
+      success: false,
+      error:
+        "Could not connect to Railway processor.",
+      details:
+        error.message
+    });
+  }
 
 });
 
 
-// ==========================================
-// START SERVER
-// ==========================================
+/*
+========================================
+START SERVER
+========================================
+*/
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+  process.env.PORT || 3000;
+
 
 app.listen(PORT, () => {
 
   console.log(
-    `ClipAI server running on port ${PORT}`
+    `ClipAI API server running on port ${PORT}`
   );
 
 });
