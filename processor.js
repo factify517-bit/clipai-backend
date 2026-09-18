@@ -3,7 +3,6 @@ const multer = require("multer");
 const { execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const https = require("https");
 
 const app = express();
 
@@ -24,37 +23,26 @@ const upload = multer({
 
 const jobs = {};
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
-const OPENAI_API_KEY =
-  process.env.OPENAI_API_KEY;
-
-
-// ========================================
-// FFmpeg
-// ========================================
+const PYTHON =
+  "/opt/whisper/bin/python";
 
 function runFFmpeg(args) {
-
   return new Promise((resolve, reject) => {
-
     execFile(
       "ffmpeg",
       args,
       {
-        maxBuffer:
-          10 * 1024 * 1024
+        maxBuffer: 20 * 1024 * 1024
       },
       (error, stdout, stderr) => {
-
         if (error) {
           reject(
             new Error(
-              stderr ||
-              error.message
+              stderr || error.message
             )
           );
-
           return;
         }
 
@@ -62,241 +50,96 @@ function runFFmpeg(args) {
           stdout,
           stderr
         });
-
       }
     );
-
   });
-
 }
 
-
-// ========================================
-// OpenAI transcription
-// ========================================
-
 function transcribeAudio(audioFile) {
-
   return new Promise((resolve, reject) => {
+    execFile(
+      PYTHON,
+      [
+        "/app/transcribe.py",
+        audioFile
+      ],
+      {
+        timeout: 600000,
+        maxBuffer: 20 * 1024 * 1024
+      },
+      (error, stdout, stderr) => {
 
-    if (!OPENAI_API_KEY) {
+        if (error) {
+          reject(
+            new Error(
+              stderr ||
+              stdout ||
+              error.message
+            )
+          );
+          return;
+        }
 
-      reject(
-        new Error(
-          "OPENAI_API_KEY is not configured."
-        )
-      );
+        try {
 
-      return;
-    }
+          const lines =
+            stdout
+              .trim()
+              .split("\n");
 
+          const lastLine =
+            lines[lines.length - 1];
 
-    const boundary =
-      "----ClipAI" +
-      Date.now();
+          const data =
+            JSON.parse(lastLine);
 
+          if (!data.success) {
+            reject(
+              new Error(
+                data.error ||
+                "Transcription failed."
+              )
+            );
+            return;
+          }
 
-    const audioData =
-      fs.readFileSync(audioFile);
-
-
-    const filename =
-      path.basename(audioFile);
-
-
-    const parts = [];
-
-
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="model"\r\n\r\n` +
-        `gpt-4o-mini-transcribe\r\n`
-      )
-    );
-
-
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="response_format"\r\n\r\n` +
-        `json\r\n`
-      )
-    );
-
-
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-        `Content-Type: audio/wav\r\n\r\n`
-      )
-    );
-
-
-    parts.push(audioData);
-
-
-    parts.push(
-      Buffer.from(
-        `\r\n--${boundary}--\r\n`
-      )
-    );
-
-
-    const body =
-      Buffer.concat(parts);
-
-
-    const request =
-      https.request(
-        {
-          hostname:
-            "api.openai.com",
-
-          path:
-            "/v1/audio/transcriptions",
-
-          method:
-            "POST",
-
-          headers: {
-
-            "Authorization":
-              `Bearer ${OPENAI_API_KEY}`,
-
-            "Content-Type":
-              `multipart/form-data; boundary=${boundary}`,
-
-            "Content-Length":
-              body.length
-
-          },
-
-          timeout:
-            120000
-
-        },
-        response => {
-
-          let responseData = "";
-
-          response.on(
-            "data",
-            chunk => {
-              responseData += chunk;
-            }
+          resolve(
+            data.text || ""
           );
 
+        } catch (parseError) {
 
-          response.on(
-            "end",
-            () => {
-
-              if (
-                response.statusCode < 200 ||
-                response.statusCode >= 300
-              ) {
-
-                reject(
-                  new Error(
-                    `OpenAI transcription error (${response.statusCode}): ${responseData}`
-                  )
-                );
-
-                return;
-              }
-
-
-              try {
-
-                const data =
-                  JSON.parse(
-                    responseData
-                  );
-
-
-                resolve(
-                  data.text || ""
-                );
-
-              } catch (error) {
-
-                reject(
-                  new Error(
-                    "Invalid transcription response."
-                  )
-                );
-
-              }
-
-            }
+          reject(
+            new Error(
+              "Invalid Whisper response."
+            )
           );
 
         }
-      );
-
-
-    request.on(
-      "error",
-      error => {
-        reject(error);
       }
     );
-
-
-    request.on(
-      "timeout",
-      () => {
-
-        request.destroy();
-
-        reject(
-          new Error(
-            "Transcription request timed out."
-          )
-        );
-
-      }
-    );
-
-
-    request.write(body);
-
-    request.end();
-
   });
-
 }
 
-
-// ========================================
-// Home
-// ========================================
+function cleanupFile(file) {
+  try {
+    if (file && fs.existsSync(file)) {
+      fs.unlinkSync(file);
+    }
+  } catch (_) {}
+}
 
 app.get("/", (req, res) => {
-
   res.json({
-
     status: "online",
-
     message:
       "ClipAI processor is online.",
-
     processor:
-      "FFmpeg + AI transcription"
-
+      "FFmpeg + Local Whisper"
   });
-
 });
 
-
-// ========================================
-// FFmpeg test
-// ========================================
-
 app.get("/ffmpeg", async (req, res) => {
-
   try {
 
     const result =
@@ -304,43 +147,27 @@ app.get("/ffmpeg", async (req, res) => {
         "-version"
       ]);
 
-
     const firstLine =
       result.stdout
         .split("\n")[0];
 
-
     res.json({
-
       success: true,
-
-      ffmpeg:
-        firstLine
-
+      ffmpeg: firstLine
     });
 
   } catch (error) {
 
     res.status(500).json({
-
       success: false,
-
       error:
         "FFmpeg is not available.",
-
       details:
         error.message
-
     });
 
   }
-
 });
-
-
-// ========================================
-// Video upload
-// ========================================
 
 app.post(
   "/upload",
@@ -350,24 +177,18 @@ app.post(
     if (!req.file) {
 
       return res.status(400).json({
-
         success: false,
-
         error:
           "No video file uploaded."
-
       });
 
     }
 
-
     const inputFile =
       req.file.path;
 
-
     const originalName =
       req.file.originalname;
-
 
     const jobId =
       Date.now().toString(36) +
@@ -375,27 +196,20 @@ app.post(
         .toString(36)
         .substring(2, 8);
 
-
     const outputFile =
       path.join(
         uploadDir,
         `${jobId}.wav`
       );
 
-
     jobs[jobId] = {
 
       jobId,
 
-      type:
-        "file",
+      type: "file",
 
       filename:
         originalName,
-
-      inputFile,
-
-      outputFile,
 
       status:
         "processing",
@@ -414,13 +228,12 @@ app.post(
 
     };
 
-
     console.log(
       "================================="
     );
 
     console.log(
-      "PROCESSOR: NEW VIDEO"
+      "NEW VIDEO"
     );
 
     console.log(
@@ -436,7 +249,6 @@ app.post(
     console.log(
       "================================="
     );
-
 
     res.json({
 
@@ -455,44 +267,28 @@ app.post(
 
     });
 
-
     try {
-
-      // --------------------------------
-      // STEP 1: Extract audio
-      // --------------------------------
 
       jobs[jobId].progress =
         25;
 
-
       console.log(
-        "PROCESSOR: Extracting audio..."
+        "Extracting audio..."
       );
 
-
       await runFFmpeg([
-
         "-y",
-
         "-i",
         inputFile,
-
         "-vn",
-
         "-ac",
         "1",
-
         "-ar",
         "16000",
-
         "-c:a",
         "pcm_s16le",
-
         outputFile
-
       ]);
-
 
       if (
         !fs.existsSync(
@@ -506,97 +302,48 @@ app.post(
 
       }
 
-
       jobs[jobId].progress =
         50;
 
-
       console.log(
-        "PROCESSOR: Audio ready."
+        "Audio extraction complete."
       );
-
-
-      // --------------------------------
-      // STEP 2: Transcription
-      // --------------------------------
 
       jobs[jobId].status =
         "transcribing";
 
-
       jobs[jobId].progress =
         60;
 
-
       console.log(
-        "PROCESSOR: Sending audio for transcription..."
+        "Starting local Whisper..."
       );
-
 
       const transcript =
         await transcribeAudio(
           outputFile
         );
 
-
       jobs[jobId].transcript =
         transcript;
-
 
       jobs[jobId].progress =
         100;
 
-
       jobs[jobId].status =
         "completed";
 
-
       console.log(
-        "PROCESSOR: Transcription complete."
+        "Whisper transcription complete."
       );
-
 
       console.log(
         "Transcript length:",
         transcript.length
       );
 
-
-      // --------------------------------
-      // Cleanup files
-      // --------------------------------
-
-      try {
-
-        if (
-          fs.existsSync(
-            inputFile
-          )
-        ) {
-          fs.unlinkSync(
-            inputFile
-          );
-        }
-
-
-        if (
-          fs.existsSync(
-            outputFile
-          )
-        ) {
-          fs.unlinkSync(
-            outputFile
-          );
-        }
-
-      } catch (cleanupError) {
-
-        console.log(
-          "Cleanup warning:",
-          cleanupError.message
-        );
-
-      }
+      cleanupFile(inputFile);
+      cleanupFile(outputFile);
 
     } catch (error) {
 
@@ -605,53 +352,22 @@ app.post(
         error.message
       );
 
-
       jobs[jobId].status =
         "failed";
-
 
       jobs[jobId].progress =
         0;
 
-
       jobs[jobId].error =
         error.message;
 
-
-      try {
-
-        if (
-          fs.existsSync(
-            inputFile
-          )
-        ) {
-          fs.unlinkSync(
-            inputFile
-          );
-        }
-
-
-        if (
-          fs.existsSync(
-            outputFile
-          )
-        ) {
-          fs.unlinkSync(
-            outputFile
-          );
-        }
-
-      } catch (_) {}
+      cleanupFile(inputFile);
+      cleanupFile(outputFile);
 
     }
 
   }
 );
-
-
-// ========================================
-// VOD URL route
-// ========================================
 
 app.post(
   "/process",
@@ -660,24 +376,18 @@ app.post(
     const { url } =
       req.body;
 
-
     if (!url) {
 
       return res.status(400).json({
-
         success: false,
-
         error:
           "VOD URL is required."
-
       });
 
     }
 
-
     const lowerUrl =
       url.toLowerCase();
-
 
     const supported =
       lowerUrl.includes(
@@ -693,27 +403,21 @@ app.post(
         "kick.com"
       );
 
-
     if (!supported) {
 
       return res.status(400).json({
-
         success: false,
-
         error:
           "Only YouTube, Twitch and Kick links are supported."
-
       });
 
     }
-
 
     const jobId =
       Date.now().toString(36) +
       Math.random()
         .toString(36)
         .substring(2, 8);
-
 
     jobs[jobId] = {
 
@@ -730,6 +434,9 @@ app.post(
       progress:
         0,
 
+      transcript:
+        "",
+
       moments:
         [],
 
@@ -737,7 +444,6 @@ app.post(
         new Date().toISOString()
 
     };
-
 
     return res.json({
 
@@ -761,11 +467,6 @@ app.post(
   }
 );
 
-
-// ========================================
-// Status
-// ========================================
-
 app.get(
   "/status/:jobId",
   (req, res) => {
@@ -773,24 +474,18 @@ app.get(
     const jobId =
       req.params.jobId;
 
-
     const job =
       jobs[jobId];
-
 
     if (!job) {
 
       return res.status(404).json({
-
         success: false,
-
         error:
           "Job not found."
-
       });
 
     }
-
 
     res.json({
 
@@ -824,11 +519,6 @@ app.get(
 
   }
 );
-
-
-// ========================================
-// Start server
-// ========================================
 
 app.listen(
   PORT,
