@@ -1,36 +1,64 @@
 const express = require("express");
+const { execFile } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 
 app.use(express.json());
 
 const jobs = {};
+const PORT = process.env.PORT || 3000;
 
+function runFFmpeg(args) {
+  return new Promise((resolve, reject) => {
+    execFile("ffmpeg", args, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message));
+        return;
+      }
 
-/*
-========================================
-HOME
-========================================
-*/
+      resolve({
+        stdout,
+        stderr
+      });
+    });
+  });
+}
 
 app.get("/", (req, res) => {
-
   res.json({
     status: "online",
     message: "ClipAI processor is online.",
-    processor: "ready"
+    processor: "FFmpeg ready"
   });
-
 });
 
+app.get("/ffmpeg", async (req, res) => {
+  try {
+    const result = await runFFmpeg([
+      "-version"
+    ]);
 
-/*
-========================================
-CREATE JOB
-========================================
-*/
+    const firstLine =
+      result.stdout.split("\n")[0];
 
-app.post("/process", (req, res) => {
+    res.json({
+      success: true,
+      ffmpeg: firstLine
+    });
+
+  } catch (error) {
+
+    res.status(500).json({
+      success: false,
+      error: "FFmpeg is not available.",
+      details: error.message
+    });
+  }
+});
+
+app.post("/process", async (req, res) => {
 
   const { url } = req.body;
 
@@ -39,19 +67,15 @@ app.post("/process", (req, res) => {
   console.log("URL:", url);
   console.log("=================================");
 
-
   if (!url) {
-
     return res.status(400).json({
       success: false,
       error: "VOD URL is required."
     });
-
   }
 
-
-  const lowerUrl = url.toLowerCase();
-
+  const lowerUrl =
+    url.toLowerCase();
 
   const supported =
     lowerUrl.includes("youtube.com") ||
@@ -59,17 +83,13 @@ app.post("/process", (req, res) => {
     lowerUrl.includes("twitch.tv") ||
     lowerUrl.includes("kick.com");
 
-
   if (!supported) {
-
     return res.status(400).json({
       success: false,
       error:
         "Only YouTube, Twitch and Kick links are supported."
     });
-
   }
-
 
   const jobId =
     Date.now().toString(36) +
@@ -77,42 +97,20 @@ app.post("/process", (req, res) => {
       .toString(36)
       .substring(2, 8);
 
-
   jobs[jobId] = {
-
-    jobId: jobId,
-
-    url: url,
-
+    jobId,
+    url,
     status: "queued",
-
     progress: 0,
-
     moments: [],
-
     createdAt:
       new Date().toISOString()
-
   };
 
-
-  console.log("PROCESSOR: JOB CREATED");
-
   console.log(
-    "Job ID:",
+    "PROCESSOR: JOB CREATED",
     jobId
   );
-
-
-  /*
-  --------------------------------------
-  TEMPORARY PROCESSING STATE
-  --------------------------------------
-
-  Actual video processing will be added
-  after the processor is separated from
-  the API server.
-  */
 
   setTimeout(() => {
 
@@ -133,90 +131,41 @@ app.post("/process", (req, res) => {
 
   }, 3000);
 
-
   return res.json({
-
     success: true,
-
-    jobId: jobId,
-
+    jobId,
     status: "queued",
-
     progress: 0,
-
     message:
       "Processing job created.",
-
-    url: url
-
+    url
   });
-
 });
-
-
-/*
-========================================
-JOB STATUS
-========================================
-*/
 
 app.get("/status/:jobId", (req, res) => {
 
   const jobId =
     req.params.jobId;
 
-
-  console.log(
-    "PROCESSOR: STATUS REQUEST",
-    jobId
-  );
-
-
   const job =
     jobs[jobId];
 
-
   if (!job) {
-
     return res.status(404).json({
-
       success: false,
-
       error: "Job not found."
-
     });
-
   }
 
-
-  return res.json({
-
+  res.json({
     success: true,
-
     jobId: job.jobId,
-
     status: job.status,
-
     progress: job.progress,
-
     moments: job.moments,
-
     createdAt: job.createdAt
-
   });
-
 });
-
-
-/*
-========================================
-START SERVER
-========================================
-*/
-
-const PORT =
-  process.env.PORT || 3000;
-
 
 app.listen(PORT, () => {
 
