@@ -1,0 +1,12 @@
+{
+  "name": "clipai-backend",
+  "version": "1.0.0",
+  "description": "ClipAI video processing backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
